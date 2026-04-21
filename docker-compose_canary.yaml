@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  web-server:
+    image: ${DOCKER_HUB_USER}/website-app:${BUILD_NUMBER}
+    deploy:
+      replicas: 1
+      labels:
+        - "traffic.weight=25"
+    ports:
+      - "8081:8080"
+    environment:
+      - APP_ENV=canary
+      - DB_HOST=db
+      - SPRING_DATASOURCE_URL=jdbc:mysql://db:3306/dorm
+      - SPRING_DATASOURCE_USERNAME=root
+      - SPRING_DATASOURCE_PASSWORD=ydurada
+    depends_on:
+      - db
+
+  db:
+    image: ${DOCKER_HUB_USER}/website-mysql:${BUILD_NUMBER}
+    deploy:
+      replicas: 1
+    environment:
+      - MYSQL_ROOT_PASSWORD=ydurada
+      - MYSQL_DATABASE=dorm

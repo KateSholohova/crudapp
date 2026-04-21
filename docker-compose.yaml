@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  db:
+    image: katesholohova/website-mysql:latest
+    restart: always
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      restart_policy:
+        condition: any
+
+  web-server:
+    image: katesholohova/website-app:latest
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://db:3306/dorm
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: ydurada
+    depends_on:
+      - db
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: any
+
+volumes:
+  mysql-data:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: addr=192.168.0.1,nolock,soft,rw
+      device: ":/srv/mysql"
