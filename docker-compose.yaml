@@ -3,9 +3,11 @@ version: '3.8'
 services:
   db:
     image: katesholohova/website-mysql:latest
-    restart: always
     ports:
       - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ydurada
+      MYSQL_DATABASE: dorm
     volumes:
       - mysql-data:/var/lib/mysql
     deploy:
@@ -13,12 +15,9 @@ services:
       placement:
         constraints:
           - node.role == worker
-      restart_policy:
-        condition: any
 
   web-server:
     image: katesholohova/website-app:latest
-    restart: always
     ports:
       - "8080:8080"
     environment:
@@ -29,13 +28,7 @@ services:
       - db
     deploy:
       replicas: 3
-      restart_policy:
-        condition: any
 
 volumes:
   mysql-data:
     driver: local
-    driver_opts:
-      type: nfs
-      o: addr=192.168.0.1,nolock,soft,rw
-      device: ":/srv/mysql"
