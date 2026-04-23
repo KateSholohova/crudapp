@@ -4,11 +4,11 @@ pipeline {
     environment {
         APP_NAME = 'app'
         CANARY_APP_NAME = 'app-canary'
-        DOCKER_HUB_USER = 'katesholohova'  // ← ВАШ username
+        DOCKER_HUB_USER = 'katesholohova'
         GIT_REPO = 'https://github.com/KateSholohova/crudapp.git'
-        BACKEND_IMAGE_NAME = 'website-app'      // Ваш Java backend
-        DATABASE_IMAGE_NAME = 'website-mysql'   // MySQL
-        MANAGER_IP = '192.168.0.1'  // ← IP вашей manager ноды
+        BACKEND_IMAGE_NAME = 'website-app'
+        DATABASE_IMAGE_NAME = 'website-mysql'
+        MANAGER_IP = '192.168.0.1'
     }
     
     stages {
@@ -21,13 +21,10 @@ pipeline {
         stage('Build Docker Images') {
             steps {
                 script {
-                    // Сборка Java backend (используем ваш Dockerfile)
                     sh """
                         docker build -f Dockerfile -t ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} .
                         docker tag ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:latest
                     """
-                    
-                    // Сборка MySQL (используем ваш Dockerfile-mysql)
                     sh """
                         docker build -f Dockerfile-mysql -t ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} .
                         docker tag ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:latest
@@ -36,25 +33,13 @@ pipeline {
             }
         }
         
-        stage('Push to Docker Hub') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        docker push ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER}
-                        docker push ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:latest
-                        docker push ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER}
-                        docker push ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:latest
-                    '''
-                }
-            }
-        }
+        // ⚠️ ЭТАП PUSH УДАЛЕН ⚠️
         
         stage('Deploy Canary') {
             steps {
                 sh '''
                     echo "=== Развёртывание Canary (1 реплика на порту 8081) ==="
-                    docker stack deploy -c docker-compose_canary.yml ${CANARY_APP_NAME} --with-registry-auth
+                    docker stack deploy -c docker-compose_canary.yml ${CANARY_APP_NAME}
                     echo "Ожидание запуска canary..."
                     sleep 30
                     docker service ls --filter name=${CANARY_APP_NAME}
@@ -70,7 +55,6 @@ pipeline {
                     TESTS=10
                     for i in $(seq 1 $TESTS); do
                         echo "Тест $i/$TESTS..."
-                        # Для Spring Boot пробуем разные endpoints
                         if curl -f -s --max-time 15 http://${MANAGER_IP}:8081/actuator/health 2>/dev/null || \
                            curl -f -s --max-time 15 http://${MANAGER_IP}:8081/ 2>/dev/null; then
                             SUCCESS=$((SUCCESS + 1))
@@ -92,11 +76,9 @@ pipeline {
                 sh '''
                     echo "=== Постепенное переключение трафика на новую версию ==="
                     
-                    # Проверяем, существует ли основной сервис
                     if docker service ls --filter name=${APP_NAME}_web-server | grep -q ${APP_NAME}_web-server; then
                         echo "Основной сервис существует — начинаем rolling update"
                         
-                        # Шаг 1: Обновляем первую реплику продакшена
                         echo "Шаг 1: Обновляем 1-ю реплику продакшена"
                         docker service update \
                             --image ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} \
@@ -108,7 +90,6 @@ pipeline {
                         echo "Ожидание стабилизации после первой реплики..."
                         sleep 40
                         
-                        # Мониторинг после первого шага
                         echo "=== Мониторинг после первой реплики ==="
                         MONITOR_SUCCESS=0
                         MONITOR_TESTS=10
@@ -128,7 +109,6 @@ pipeline {
                         echo "Мониторинг после первой реплики прошёл!"
                         sleep 60
                         
-                        # Шаг 2: Обновляем оставшиеся реплики
                         echo "Шаг 2: Обновляем оставшиеся реплики"
                         docker service update \
                             --image ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} \
@@ -139,23 +119,19 @@ pipeline {
                         echo "Ожидание завершения полного обновления..."
                         sleep 90
                         
-                        # Проверяем, что все реплики обновлены
                         echo "Статус после обновления:"
                         docker service ps ${APP_NAME}_web-server | head -20
                         
-                        # Обновляем MySQL если изменился
-                        echo "Обновление MySQL..."
                         docker service update \
                             --image ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} \
                             ${APP_NAME}_db 2>/dev/null || echo "MySQL сервис не требует обновления"
                         
-                        # Удаляем canary
                         echo "Удаление canary stack..."
                         docker stack rm ${CANARY_APP_NAME} || true
                         sleep 20
                     else
                         echo "Первый деплой — разворачиваем продакшен"
-                        docker stack deploy -c docker-compose.yml ${APP_NAME} --with-registry-auth
+                        docker stack deploy -c docker-compose.yml ${APP_NAME}
                         sleep 60
                     fi
                     
@@ -188,15 +164,11 @@ pipeline {
     post {
         success {
             echo "✓ Canary-деплой успешно завершён!"
-            sh 'docker logout'
         }
         failure {
             echo "✗ Ошибка в пайплайне — canary удалён, продакшен остался прежним"
-            sh '''
-                docker stack rm ${CANARY_APP_NAME} || true
-                echo "Canary удалён, продакшен не тронут"
-            '''
-            sh 'docker logout'
+            sh "docker stack rm ${CANARY_APP_NAME} || true"
+            echo "Canary удалён, продакшен не тронут"
         }
         always {
             sh 'docker image prune -f || true'
