@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+     agent { label 'docker-agent' }
     
     environment {
         DB_HOST = '192.168.0.1'
