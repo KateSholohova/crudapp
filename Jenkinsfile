@@ -1,94 +1,115 @@
 pipeline {
-    agent { label 'docker-agent' }
+  agent { label 'docker-agent' }
 
-    environment {
-        DB_HOST = 'db'
-        DB_PORT = '3306'
-        DB_NAME = 'dorm'
-        DB_USER = 'root'
-        DB_PASSWORD = 'ydurada'
-        EXPECTED_TABLES = '10'
+  environment {
+    DB_HOST = 'mysql'
+    DB_PORT = '3306'
+    DB_NAME = 'dorm'
+    DB_USER = 'root'
+    DB_PASSWORD = 'ydurada'
+    EXPECTED_TABLES = '10'
+
+    APP_NAME = 'app'
+  }
+
+  stages {
+
+    stage('Checkout') {
+      steps {
+        git url: 'https://github.com/your-username/your-repo.git', branch: 'main'
+      }
     }
 
-    stages {
+    stage('Check DB Connection') {
+      steps {
+        sh '''
+          echo "=== Checking MySQL connection ==="
 
-        stage('Check Tables Count in DORM Database') {
-            steps {
-                script {
-                    sh '''
-                        echo "═══════════════════════════════════════════════"
-                        echo "   ПРОВЕРКА БАЗЫ ДАННЫХ DORM"
-                        echo "═══════════════════════════════════════════════"
+          docker run --rm --network app_net mysql:8.0 \
+            mysql -h mysql -u root -pydurada \
+            -e "SELECT 1;"
 
-                        echo "✓ Проверка Docker:"
-                        docker --version
+          echo "=== Listing tables ==="
 
-                        echo "✓ Проверка подключения к MySQL:"
-
-                        docker run --rm --network jenkins_net mysql:8.0 \
-                        mysql -h ${DB_HOST} -P ${DB_PORT} \
-                        -u ${DB_USER} -p${DB_PASSWORD} \
-                        -e "SELECT 1;" 2>&1
-
-                        if [ $? -ne 0 ]; then
-                            echo "❌ НЕ УДАЛОСЬ ПОДКЛЮЧИТЬСЯ К БД!"
-                            exit 1
-                        fi
-
-                        echo "📋 Таблицы:"
-                        docker run --rm --network jenkins_net mysql:8.0 \
-                        mysql -h ${DB_HOST} -P ${DB_PORT} \
-                        -u ${DB_USER} -p${DB_PASSWORD} \
-                        -D ${DB_NAME} \
-                        -e "SHOW TABLES;"
-
-                        echo "📊 Подсчет таблиц:"
-
-                        ACTUAL_TABLES=$(docker run --rm --network jenkins_net mysql:8.0 \
-                        mysql -h ${DB_HOST} -P ${DB_PORT} \
-                        -u ${DB_USER} -p${DB_PASSWORD} \
-                        -D ${DB_NAME} \
-                        -se "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}';")
-
-                        echo "Ожидаемое: ${EXPECTED_TABLES}"
-                        echo "Фактическое: $ACTUAL_TABLES"
-
-                        if [ "$ACTUAL_TABLES" -eq "${EXPECTED_TABLES}" ]; then
-                            echo "✅ OK"
-                        else
-                            echo "❌ НЕ СОВПАДАЕТ!"
-                            exit 1
-                        fi
-                    '''
-                }
-            }
-        }
-
-        stage('Deploy Application') {
-            steps {
-                sh '''
-                    echo "🚀 Деплой..."
-                    docker stack deploy -c docker-compose.yaml app
-                    sleep 20
-                '''
-            }
-        }
-
-        stage('Verify Deployment') {
-            steps {
-                sh '''
-                    for i in 1 2 3 4 5; do
-                        if curl -f http://localhost:8080/actuator/health; then
-                            echo "✅ OK"
-                            exit 0
-                        fi
-                        sleep 10
-                    done
-
-                    echo "❌ Не работает"
-                    exit 1
-                '''
-            }
-        }
+          docker run --rm --network app_net mysql:8.0 \
+            mysql -h mysql -u root -pydurada \
+            -D dorm -e "SHOW TABLES;"
+        '''
+      }
     }
+
+    stage('Count Tables Validation') {
+      steps {
+        sh '''
+          ACTUAL=$(docker run --rm --network app_net mysql:8.0 \
+            mysql -h mysql -u root -pydurada \
+            -D dorm -se "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='dorm';")
+
+          echo "Expected: ${EXPECTED_TABLES}"
+          echo "Actual: $ACTUAL"
+
+          if [ "$ACTUAL" -ne "${EXPECTED_TABLES}" ]; then
+            echo "❌ Table count mismatch"
+            exit 1
+          fi
+
+          echo "✅ DB OK"
+        '''
+      }
+    }
+
+    stage('Build Image') {
+      steps {
+        sh '''
+          docker build -t your-dockerhub-username/website-app:latest .
+        '''
+      }
+    }
+
+    stage('Push Image') {
+      steps {
+        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials',
+          usernameVariable: 'USER',
+          passwordVariable: 'PASS')]) {
+
+          sh '''
+            echo $PASS | docker login -u $USER --password-stdin
+            docker push your-dockerhub-username/website-app:latest
+          '''
+        }
+      }
+    }
+
+    stage('Deploy Stack') {
+      steps {
+        sh '''
+          docker stack deploy -c docker-compose.yaml app --with-registry-auth
+          sleep 30
+        '''
+      }
+    }
+
+    stage('Verify App') {
+      steps {
+        sh '''
+          for i in 1 2 3 4 5; do
+            if curl -f http://localhost:8080/actuator/health; then
+              echo "OK"
+              exit 0
+            fi
+            sleep 5
+          done
+
+          echo "FAILED"
+          exit 1
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      sh 'docker image prune -f || true'
+    }
+  }
 }
