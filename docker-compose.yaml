@@ -6,13 +6,18 @@ services:
     image: katesholohova/website-mysql:latest
     ports:
       - "3306:3306"
+
     environment:
       MYSQL_ROOT_PASSWORD: ydurada
       MYSQL_DATABASE: dorm
+      MYSQL_ROOT_HOST: "%"
+
     volumes:
       - mysql-data:/var/lib/mysql
+
     networks:
       - app_net
+
     deploy:
       replicas: 1
       placement:
@@ -25,12 +30,15 @@ services:
     image: katesholohova/website-app:latest
     ports:
       - "8080:8080"
+
     environment:
       SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/dorm
       SPRING_DATASOURCE_USERNAME: root
       SPRING_DATASOURCE_PASSWORD: ydurada
+
     networks:
       - app_net
+
     deploy:
       replicas: 2
       restart_policy:

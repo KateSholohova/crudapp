@@ -10,13 +10,14 @@ pipeline {
     EXPECTED_TABLES = '10'
 
     APP_NAME = 'app'
+    MANAGER_IP = 'localhost'   // ⚠️ если не работает — поставь IP сервера
   }
 
   stages {
 
     stage('Checkout') {
       steps {
-        git url: 'https://github.com/your-username/your-repo.git', branch: 'main'
+        git url: 'https://github.com/KateSholohova/crudapp.git', branch: 'main'
       }
     }
 
@@ -26,14 +27,19 @@ pipeline {
           echo "=== Checking MySQL connection ==="
 
           docker run --rm --network app_net mysql:8.0 \
-            mysql -h mysql -u root -pydurada \
+            mysql -h ${DB_HOST} -u${DB_USER} -p${DB_PASSWORD} \
             -e "SELECT 1;"
+
+          if [ $? -ne 0 ]; then
+            echo "❌ DB connection failed"
+            exit 1
+          fi
 
           echo "=== Listing tables ==="
 
           docker run --rm --network app_net mysql:8.0 \
-            mysql -h mysql -u root -pydurada \
-            -D dorm -e "SHOW TABLES;"
+            mysql -h ${DB_HOST} -u${DB_USER} -p${DB_PASSWORD} \
+            -D ${DB_NAME} -e "SHOW TABLES;"
         '''
       }
     }
@@ -41,9 +47,12 @@ pipeline {
     stage('Count Tables Validation') {
       steps {
         sh '''
+          echo "=== Counting tables ==="
+
           ACTUAL=$(docker run --rm --network app_net mysql:8.0 \
-            mysql -h mysql -u root -pydurada \
-            -D dorm -se "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='dorm';")
+            mysql -h ${DB_HOST} -u${DB_USER} -p${DB_PASSWORD} \
+            -D ${DB_NAME} \
+            -se "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}';")
 
           echo "Expected: ${EXPECTED_TABLES}"
           echo "Actual: $ACTUAL"
@@ -61,20 +70,24 @@ pipeline {
     stage('Build Image') {
       steps {
         sh '''
-          docker build -t your-dockerhub-username/website-app:latest .
+          echo "=== Building Docker image ==="
+          docker build -t katesholohova/website-app:latest .
         '''
       }
     }
 
     stage('Push Image') {
       steps {
-        withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials',
+        withCredentials([usernamePassword(
+          credentialsId: 'docker-hub-credentials',
           usernameVariable: 'USER',
-          passwordVariable: 'PASS')]) {
+          passwordVariable: 'PASS'
+        )]) {
 
           sh '''
+            echo "=== Pushing image to Docker Hub ==="
             echo $PASS | docker login -u $USER --password-stdin
-            docker push your-dockerhub-username/website-app:latest
+            docker push katesholohova/website-app:latest
           '''
         }
       }
@@ -83,8 +96,13 @@ pipeline {
     stage('Deploy Stack') {
       steps {
         sh '''
+          echo "=== Deploying stack ==="
           docker stack deploy -c docker-compose.yaml app --with-registry-auth
-          sleep 30
+
+          echo "Waiting for services..."
+          sleep 40
+
+          docker service ls
         '''
       }
     }
@@ -92,15 +110,20 @@ pipeline {
     stage('Verify App') {
       steps {
         sh '''
+          echo "=== Verifying application ==="
+
           for i in 1 2 3 4 5; do
-            if curl -f http://localhost:8080/actuator/health; then
-              echo "OK"
+            echo "Attempt $i..."
+
+            if curl -f http://${MANAGER_IP}:8080/actuator/health; then
+              echo "✅ Application is healthy"
               exit 0
             fi
+
             sleep 5
           done
 
-          echo "FAILED"
+          echo "❌ Application is not responding"
           exit 1
         '''
       }
@@ -108,6 +131,16 @@ pipeline {
   }
 
   post {
+    success {
+      echo "✅ Pipeline completed successfully"
+      sh 'docker logout || true'
+    }
+
+    failure {
+      echo "❌ Pipeline failed"
+      sh 'docker logout || true'
+    }
+
     always {
       sh 'docker image prune -f || true'
     }
