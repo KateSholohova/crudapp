@@ -81,7 +81,7 @@ pipeline {
                         docker stack deploy -c docker-compose_canary.yaml ${CANARY_APP_NAME}
                         
                         echo "Ожидание запуска canary..."
-                        sleep 30
+                        sleep 180
                         
                         echo "Статус сервисов:"
                         docker service ls --filter name=${CANARY_APP_NAME}
