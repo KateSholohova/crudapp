@@ -9,8 +9,7 @@ pipeline {
     DB_PASSWORD = 'ydurada'
     EXPECTED_TABLES = '10'
 
-    APP_NAME = 'app'
-    MANAGER_IP = 'localhost'   // ⚠️ если не работает — поставь IP сервера
+    MANAGER_IP = 'localhost'
   }
 
   stages {
@@ -44,7 +43,7 @@ pipeline {
       }
     }
 
-    stage('Count Tables Validation') {
+    stage('Validate Tables Count') {
       steps {
         sh '''
           echo "=== Counting tables ==="
@@ -67,36 +66,11 @@ pipeline {
       }
     }
 
-    stage('Build Image') {
-      steps {
-        sh '''
-          echo "=== Building Docker image ==="
-          docker build -t katesholohova/website-app:latest .
-        '''
-      }
-    }
-
-    stage('Push Image') {
-      steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'docker-hub-credentials',
-          usernameVariable: 'USER',
-          passwordVariable: 'PASS'
-        )]) {
-
-          sh '''
-            echo "=== Pushing image to Docker Hub ==="
-            echo $PASS | docker login -u $USER --password-stdin
-            docker push katesholohova/website-app:latest
-          '''
-        }
-      }
-    }
-
     stage('Deploy Stack') {
       steps {
         sh '''
           echo "=== Deploying stack ==="
+
           docker stack deploy -c docker-compose.yaml app --with-registry-auth
 
           echo "Waiting for services..."
@@ -133,12 +107,10 @@ pipeline {
   post {
     success {
       echo "✅ Pipeline completed successfully"
-      sh 'docker logout || true'
     }
 
     failure {
       echo "❌ Pipeline failed"
-      sh 'docker logout || true'
     }
 
     always {
