@@ -1,266 +1,110 @@
 pipeline {
-
-    agent { label 'docker-agent' }
-
+    agent any
     
-
     environment {
-
-        APP_NAME = 'app'
-        CANARY_APP_NAME = 'app-canary'
-        DOCKER_HUB_USER = 'katesholohova'
-        GIT_REPO = 'https://github.com/KateSholohova/crudapp.git'
-        BACKEND_IMAGE_NAME = 'website-app'
-        DATABASE_IMAGE_NAME = 'website-mysql'
-        MANAGER_IP = '192.168.0.1'
+        DB_HOST = '192.168.0.1'
+        DB_PORT = '3306'
+        DB_NAME = 'dorm'
+        DB_USER = 'root'
+        DB_PASSWORD = 'ydurada'
+        EXPECTED_TABLES = '10'   // ← Теперь 10 таблиц
     }
-
     
-
     stages {
-
         stage('Checkout') {
-
             steps {
-
-                git url: "${GIT_REPO}", branch: 'main', credentialsId: '0c49ac21-4d4e-42d3-ad3c-74311e1c7df3'
-
+                git url: 'https://github.com/KateSholohova/crudapp.git', 
+                    branch: 'main', 
+                    credentialsId: '0c49ac21-4d4e-42d3-ad3c-74311e1c7df3'
             }
-
         }
-
         
-
-        stage('Build Docker Images') {
-
+        stage('Check Tables Count in DORM Database') {
             steps {
-
                 script {
-
-                    sh """
-
-                        docker build -f Dockerfile -t ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} .
-
-                        docker tag ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:latest
-
-                    """
-
-                    sh """
-
-                        docker build -f Dockerfile-mysql -t ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} .
-
-                        docker tag ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:latest
-
-                    """
-
-                }
-
-            }
-
-        }
-
-        
-
-        // ⚠️ ЭТАП PUSH УДАЛЕН ⚠️
-
-        
-
-        stage('Deploy Canary') {
-
-            steps {
-
-                script {
-
-                    // Проверяем наличие файла перед деплоем
-                    sh """
-
-                        echo "=== Проверка наличия docker-compose файлов ==="
-                        ls -la docker-compose*.yaml || ls -la docker-compose*.yml
+                    sh '''
+                        echo "═══════════════════════════════════════════════"
+                        echo "   ПРОВЕРКА БАЗЫ ДАННЫХ DORM"
+                        echo "═══════════════════════════════════════════════"
                         
-                        echo "=== Развёртывание Canary (1 реплика на порту 8081) ==="
-                        docker stack deploy -c docker-compose_canary.yaml ${CANARY_APP_NAME}
+                        echo ""
+                        echo "Список всех таблиц:"
+                        docker run --rm mysql:8.0 mysql -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -se "SHOW TABLES;" 2>/dev/null
                         
-                        echo "Ожидание запуска canary..."
-                        sleep 180
+                        echo ""
+                        echo "ПОДСЧЕТ ТАБЛИЦ:"
+                        ACTUAL_TABLES=$(docker run --rm mysql:8.0 mysql -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} -D ${DB_NAME} -se "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '${DB_NAME}';" 2>/dev/null)
                         
-                        echo "Статус сервисов:"
-                        docker service ls --filter name=${CANARY_APP_NAME}
-                    """
-
-                }
-
-            }
-
-        }
-
-        
-
-        stage('Canary Testing') {
-
-            steps {
-
-                sh """
-
-                    echo "=== Тестирование Canary-версии (порт 8081) ==="
-                    
-                    SUCCESS=0
-                    TESTS=10
-                    
-                    for i in \$(seq 1 \$TESTS); do
-                        echo "Тест \$i/\$TESTS..."
-                        if curl -f -s --max-time 15 http://${MANAGER_IP}:8081/actuator/health 2>/dev/null || \\
-                           curl -f -s --max-time 15 http://${MANAGER_IP}:8081/ 2>/dev/null; then
-                            SUCCESS=\$((SUCCESS + 1))
-                            echo "✓ Тест \$i пройден"
+                        echo "   Ожидаемое количество: ${EXPECTED_TABLES}"
+                        echo "   Фактическое количество: $ACTUAL_TABLES"
+                        echo ""
+                        
+                        # Сравнение
+                        if [ "$ACTUAL_TABLES" -eq "${EXPECTED_TABLES}" ]; then
+                            echo "РЕЗУЛЬТАТ: УСПЕШНО"
+                            exit 0
+                        elif [ "$ACTUAL_TABLES" -lt "${EXPECTED_TABLES}" ]; then
+                            echo "РЕЗУЛЬТАТ: ОШИБКА"
+                            echo "   Обнаружено МЕНЬШЕ таблиц ($ACTUAL_TABLES) чем требуется (${EXPECTED_TABLES})"
+                            exit 1
                         else
-                            echo "✗ Тест \$i: нет ответа"
-                        fi
-                        sleep 4
-                    done
-                    
-                    echo "Успешных тестов: \$SUCCESS/\$TESTS"
-                    [ "\$SUCCESS" -ge 8 ] || exit 1
-                    echo "Canary прошёл тестирование!"
-                """
-
-            }
-
-        }
-
-        
-
-        stage('Gradual Traffic Shift') {
-
-            steps {
-
-                sh """
-
-                    echo "=== Постепенное переключение трафика на новую версию ==="
-                    
-                    if docker service ls --filter name=${APP_NAME}_web-server | grep -q ${APP_NAME}_web-server; then
-                        echo "Основной сервис существует — начинаем rolling update"
-                        
-                        echo "Шаг 1: Обновляем 1-ю реплику продакшена"
-                        docker service update \\
-                            --image ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} \\
-                            --update-parallelism 1 \\
-                            --update-delay 20h \\
-                            --detach=true \\
-                            ${APP_NAME}_web-server
-                        
-                        echo "Ожидание стабилизации после первой реплики..."
-                        sleep 40
-                        
-                        echo "=== Мониторинг после первой реплики ==="
-                        MONITOR_SUCCESS=0
-                        MONITOR_TESTS=10
-                        
-                        for j in \$(seq 1 \$MONITOR_TESTS); do
-                            if curl -f -s --max-time 15 http://${MANAGER_IP}:8080/actuator/health 2>/dev/null || \\
-                               curl -f -s --max-time 15 http://${MANAGER_IP}:8080/ 2>/dev/null; then
-                                MONITOR_SUCCESS=\$((MONITOR_SUCCESS + 1))
-                                echo "✓ Проверка \$j пройдена"
-                            else
-                                echo "✗ Проверка \$j не пройдена"
-                            fi
-                            sleep 5
-                        done
-                        
-                        echo "Успешных проверок после первой реплики: \$MONITOR_SUCCESS/\$MONITOR_TESTS"
-                        [ "\$MONITOR_SUCCESS" -ge 9 ] || exit 1
-                        echo "Мониторинг после первой реплики прошёл!"
-                        sleep 60
-                        
-                        echo "Шаг 2: Обновляем оставшиеся реплики"
-                        docker service update \\
-                            --image ${DOCKER_HUB_USER}/${BACKEND_IMAGE_NAME}:${BUILD_NUMBER} \\
-                            --update-parallelism 1 \\
-                            --update-delay 30s \\
-                            ${APP_NAME}_web-server
-                        
-                        echo "Ожидание завершения полного обновления..."
-                        sleep 90
-                        
-                        echo "Статус после обновления:"
-                        docker service ps ${APP_NAME}_web-server | head -20
-                        
-                        docker service update \\
-                            --image ${DOCKER_HUB_USER}/${DATABASE_IMAGE_NAME}:${BUILD_NUMBER} \\
-                            ${APP_NAME}_db 2>/dev/null || echo "MySQL сервис не требует обновления"
-                        
-                        echo "Удаление canary stack..."
-                        docker stack rm ${CANARY_APP_NAME} || true
-                        sleep 20
-                    else
-                        echo "Первый деплой — разворачиваем продакшен"
-                        docker stack deploy -c docker-compose.yaml ${APP_NAME}
-                        sleep 60
-                    fi
-                    
-                    echo "Постепенное переключение завершено"
-                """
-
-            }
-
-        }
-
-        
-
-        stage('Final Verification') {
-
-            steps {
-
-                sh """
-
-                    echo "=== Финальная проверка ==="
-                    
-                    for i in \$(seq 1 5); do
-                        echo "Финальный тест \$i/5..."
-                        if curl -f --max-time 10 http://${MANAGER_IP}:8080/actuator/health 2>/dev/null || \\
-                           curl -f --max-time 10 http://${MANAGER_IP}:8080/ 2>/dev/null; then
-                            echo "✓ Тест \$i пройден"
-                        else
-                            echo "✗ Тест \$i не пройден"
+                            echo "РЕЗУЛЬТАТ: ПРЕДУПРЕЖДЕНИЕ"
+                            echo "   Обнаружено БОЛЬШЕ таблиц ($ACTUAL_TABLES) чем ожидалось (${EXPECTED_TABLES})"
                             exit 1
                         fi
-                        sleep 5
+                    '''
+                }
+            }
+        }
+        
+        stage('Deploy Application') {
+            steps {
+                echo "НАЧАЛО ДЕПЛОЯ..."
+                sh '''
+                    echo "Развертывание основного приложения..."
+                    docker stack deploy -c docker-compose.yaml app
+                    
+                    echo "Ожидание запуска..."
+                    sleep 30
+                    
+                    echo "Деплой успешно завершен!"
+                '''
+            }
+        }
+        
+        stage('Verify Deployment') {
+            steps {
+                echo "=== ФИНАЛЬНАЯ ПРОВЕРКА ==="
+                sh '''
+                    # Проверка доступности приложения
+                    for i in 1 2 3 4 5; do
+                        if curl -f -s http://${DB_HOST}:8080/actuator/health 2>/dev/null; then
+                            echo "Приложение работает!"
+                            exit 0
+                        fi
+                        echo "Ожидание приложения... попытка $i/5"
+                        sleep 10
                     done
                     
-                    echo "Все финальные тесты пройдены!"
-                """
-
+                    echo "Приложение не отвечает"
+                    exit 1
+                '''
             }
-
         }
-
     }
-
     
-
     post {
-
         success {
-
-            echo "✓ Canary-деплой успешно завершён!"
+            echo "═══════════════════════════════════════════════"
+            echo "ПАЙПЛАЙН УСПЕШНО ЗАВЕРШЕН!"
+            echo "═══════════════════════════════════════════════"
 
         }
-
         failure {
-
-            echo "✗ Ошибка в пайплайне — canary удалён, продакшен остался прежним"
-
-            sh "docker stack rm ${CANARY_APP_NAME} || true"
-
-            echo "Canary удалён, продакшен не тронут"
+            echo "═══════════════════════════════════════════════"
+            echo "ПАЙПЛАЙН ПРОВАЛЕН!"
+            echo "═══════════════════════════════════════════════"
 
         }
-
-        always {
-
-            sh 'docker image prune -f || true'
-
-        }
-
     }
-
 }
