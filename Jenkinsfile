@@ -63,21 +63,6 @@ pipeline {
         '''
       }
     }
-
-    stage('Deploy Stack') {
-      steps {
-        sh '''
-          echo "=== Deploying stack ==="
-
-          docker stack deploy -c docker-compose.yaml app --with-registry-auth
-
-          echo "Waiting for services..."
-          sleep 40
-
-          docker service ls
-        '''
-      }
-    }
   }
 
   post {
