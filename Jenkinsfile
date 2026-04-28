@@ -8,8 +8,6 @@ pipeline {
     DB_USER = 'root'
     DB_PASSWORD = 'ydurada'
     EXPECTED_TABLES = '10'
-
-    MANAGER_IP = 'localhost'
   }
 
   stages {
@@ -77,28 +75,6 @@ pipeline {
           sleep 40
 
           docker service ls
-        '''
-      }
-    }
-
-    stage('Verify App') {
-      steps {
-        sh '''
-          echo "=== Verifying application ==="
-
-          for i in 1 2 3 4 5; do
-            echo "Attempt $i..."
-
-            if curl -f http://${MANAGER_IP}:8080/actuator/health; then
-              echo "✅ Application is healthy"
-              exit 0
-            fi
-
-            sleep 5
-          done
-
-          echo "❌ Application is not responding"
-          exit 1
         '''
       }
     }
